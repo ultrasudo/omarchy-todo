@@ -4,7 +4,8 @@ A tiny local GTK 4 todo app made for Omarchy.
 
 ## Features
 
-- Add tasks
+- Add tasks with optional descriptions
+- Add quick emojis to titles or descriptions
 - Check tasks off
 - Delete tasks
 - Clear completed tasks

@@ -14,6 +14,7 @@ from gi.repository import Gio, Gdk, Gtk  # noqa: E402
 APP_ID = "local.omarchy.Todo"
 DATA_DIR = Path.home() / ".local" / "share" / "omarchy-todo"
 DATA_FILE = DATA_DIR / "todos.json"
+EMOJIS = ["✨", "🔥", "✅", "💡", "📌", "🛒", "💻", "🏠", "💪", "❤️"]
 
 
 class TodoStore:
@@ -24,6 +25,8 @@ class TodoStore:
     def load(self):
         try:
             self.todos = json.loads(DATA_FILE.read_text())
+            for todo in self.todos:
+                todo.setdefault("description", "")
         except FileNotFoundError:
             self.todos = []
         except Exception:
@@ -37,14 +40,22 @@ class TodoStore:
     def save(self):
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         tmp = DATA_FILE.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(self.todos, indent=2))
+        tmp.write_text(json.dumps(self.todos, indent=2, ensure_ascii=False))
         os.replace(tmp, DATA_FILE)
 
-    def add(self, text):
+    def add(self, text, description=""):
         text = text.strip()
-        if not text:
+        description = description.strip()
+        if not text and not description:
             return
-        self.todos.append({"id": uuid.uuid4().hex, "text": text, "done": False})
+        if not text:
+            text = "Untitled task"
+        self.todos.append({
+            "id": uuid.uuid4().hex,
+            "text": text,
+            "description": description,
+            "done": False,
+        })
         self.save()
 
     def set_done(self, todo_id, done):
@@ -69,6 +80,7 @@ class TodoApp(Gtk.Application):
         self.store = TodoStore()
         self.listbox = None
         self.empty = None
+        self.emoji_target = "title"
 
     def do_startup(self):
         Gtk.Application.do_startup(self)
@@ -76,8 +88,11 @@ class TodoApp(Gtk.Application):
         css.load_from_data(b"""
             window { background: @window_bg_color; }
             .title { font-weight: 700; font-size: 22px; }
+            .todo-title { font-weight: 600; }
+            .todo-description { opacity: 0.75; font-size: 0.92em; }
             .todo-done { opacity: 0.55; text-decoration-line: line-through; }
             .empty { opacity: 0.65; padding: 24px; }
+            textview { padding: 8px; }
         """)
         Gtk.StyleContext.add_provider_for_display(
             Gdk.Display.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
@@ -85,7 +100,7 @@ class TodoApp(Gtk.Application):
 
     def do_activate(self):
         win = Gtk.ApplicationWindow(application=self, title="Todo")
-        win.set_default_size(420, 560)
+        win.set_default_size(460, 640)
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         root.set_margin_top(16)
@@ -107,18 +122,32 @@ class TodoApp(Gtk.Application):
         clear.connect("clicked", self.on_clear_done)
         header.append(clear)
 
-        entry_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        root.append(entry_box)
-
-        self.entry = Gtk.Entry(placeholder_text="Add a task…")
+        self.entry = Gtk.Entry(placeholder_text="Task title…")
         self.entry.set_hexpand(True)
         self.entry.connect("activate", self.on_add)
-        entry_box.append(self.entry)
+        self.entry.add_controller(self.focus_controller("title"))
+        root.append(self.entry)
 
-        add = Gtk.Button(label="Add")
+        desc_frame = Gtk.Frame()
+        root.append(desc_frame)
+
+        self.description = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        self.description.set_size_request(-1, 78)
+        self.description.add_controller(self.focus_controller("description"))
+        desc_frame.set_child(self.description)
+
+        emoji_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        root.append(emoji_box)
+        for emoji in EMOJIS:
+            button = Gtk.Button(label=emoji)
+            button.set_tooltip_text(f"Insert {emoji}")
+            button.connect("clicked", self.on_emoji, emoji)
+            emoji_box.append(button)
+
+        add = Gtk.Button(label="Add task")
         add.add_css_class("suggested-action")
         add.connect("clicked", self.on_add)
-        entry_box.append(add)
+        root.append(add)
 
         scroller = Gtk.ScrolledWindow()
         scroller.set_vexpand(True)
@@ -139,9 +168,35 @@ class TodoApp(Gtk.Application):
         self.refresh()
         win.present()
 
+    def focus_controller(self, target):
+        controller = Gtk.EventControllerFocus()
+        controller.connect("enter", lambda *_: setattr(self, "emoji_target", target))
+        return controller
+
+    def description_text(self):
+        buffer = self.description.get_buffer()
+        start = buffer.get_start_iter()
+        end = buffer.get_end_iter()
+        return buffer.get_text(start, end, False)
+
+    def clear_description(self):
+        self.description.get_buffer().set_text("")
+
+    def on_emoji(self, _button, emoji):
+        if self.emoji_target == "description":
+            buffer = self.description.get_buffer()
+            buffer.insert_at_cursor(emoji)
+        else:
+            pos = self.entry.get_position()
+            text = self.entry.get_text()
+            self.entry.set_text(text[:pos] + emoji + text[pos:])
+            self.entry.set_position(pos + len(emoji))
+
     def on_add(self, *_):
-        self.store.add(self.entry.get_text())
+        self.store.add(self.entry.get_text(), self.description_text())
         self.entry.set_text("")
+        self.clear_description()
+        self.entry.grab_focus()
         self.refresh()
 
     def on_clear_done(self, *_):
@@ -171,12 +226,25 @@ class TodoApp(Gtk.Application):
         check.connect("toggled", self.on_toggle, todo["id"])
         box.append(check)
 
+        text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        text_box.set_hexpand(True)
+        box.append(text_box)
+
         label = Gtk.Label(label=todo.get("text", ""), wrap=True)
         label.set_xalign(0)
-        label.set_hexpand(True)
+        label.add_css_class("todo-title")
         if todo.get("done"):
             label.add_css_class("todo-done")
-        box.append(label)
+        text_box.append(label)
+
+        description = todo.get("description", "").strip()
+        if description:
+            desc_label = Gtk.Label(label=description, wrap=True)
+            desc_label.set_xalign(0)
+            desc_label.add_css_class("todo-description")
+            if todo.get("done"):
+                desc_label.add_css_class("todo-done")
+            text_box.append(desc_label)
 
         delete = Gtk.Button(icon_name="user-trash-symbolic")
         delete.set_tooltip_text("Delete")
