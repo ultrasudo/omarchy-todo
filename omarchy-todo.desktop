@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Todo
+Comment=Tiny local todo list
+Exec=/home/ultrasudo/.local/bin/omarchy-todo
+Icon=checkbox-checked-symbolic
+Terminal=false
+Categories=Utility;Office;
+StartupNotify=true
